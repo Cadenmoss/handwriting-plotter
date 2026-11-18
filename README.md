@@ -1,5 +1,8 @@
 # Handwriting plotter (Bambu X2D + pen holder)
 
+![Sample output: text laid out as pen strokes](docs/preview.png)
+*SVG preview rendered from the bundled test glyph set (`tests/glyphs_fake.json`), not real handwriting.*
+
 Pipeline: **your handwriting → single-line strokes (`glyphs.json`) → text laid out in your hand → SVG preview → G-code**.
 
 One-time setup (already done here): `python3 -m venv .venv && .venv/bin/pip install numpy pillow scikit-image`
