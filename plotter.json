@@ -1,0 +1,13 @@
+{
+  "header_verified": false,
+  "header_file": "gcode/header.gcode",
+  "footer_file": "gcode/footer.gcode",
+  "paper_origin_mm": null,
+  "pen_offset_mm": null,
+  "z_up": null,
+  "z_down": null,
+  "bounds_mm": [10, 10, 240, 240],
+  "feed_draw": 2400,
+  "feed_travel": 12000,
+  "feed_z": 600
+}

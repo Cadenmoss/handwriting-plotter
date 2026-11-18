@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+# personal handwriting data and generated output
+glyphs.json
+first_page.txt
+out/
+template/*.png
+scan*.png
+s[1-4].png

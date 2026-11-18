@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handwriting Capture</title>
+<style>
+  :root { --bg:#f6f5f1; --fg:#1c1b19; --mut:#76736b; --card:#fff; --line:#d9d6cc; --acc:#2d5bd8; --ok:#2f8f4e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161618; --fg:#ecebe6; --mut:#9a978f; --card:#222225; --line:#3a3a3f; --acc:#7aa2ff; --ok:#58c07c; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.4 system-ui,sans-serif; }
+  main { max-width:980px; margin:0 auto; padding:16px; display:grid; gap:16px; grid-template-columns:minmax(0,1fr); }
+  @media (min-width:860px) { main { grid-template-columns:500px minmax(0,1fr); } }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  .prompt { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
+  .prompt b { font-size:34px; line-height:1; min-width:1.2em; }
+  .mut { color:var(--mut); }
+  canvas { width:100%; aspect-ratio:1; border:1px solid var(--line); border-radius:8px; background:#fff; touch-action:none; cursor:crosshair; display:block; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  button { font:inherit; padding:8px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--acc); color:#fff; border-color:var(--acc); }
+  button:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chip { width:36px; height:36px; display:grid; place-items:center; border-radius:8px; border:1px solid var(--line);
+          background:var(--card); color:var(--fg); font-size:16px; padding:0; position:relative; }
+  .chip.done { border-color:var(--ok); }
+  .chip.cur { outline:2px solid var(--acc); }
+  .chip small { position:absolute; right:2px; bottom:0; font-size:9px; color:var(--mut); }
+  label { display:flex; align-items:center; gap:6px; }
+  input[type=number] { width:56px; font:inherit; padding:4px 6px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); }
+  ol { margin:6px 0 0 18px; padding:0; }
+</style>
+</head>
+<body>
+<main>
+  <section class="card">
+    <h1>Handwriting capture</h1>
+    <div class="prompt"><b id="ch">a</b><span class="mut" id="info"></span></div>
+    <canvas id="pad" width="800" height="800" aria-label="Writing pad"></canvas>
+    <div class="row">
+      <button class="primary" id="accept">Accept &amp; next (Enter)</button>
+      <button id="undo">Undo stroke</button>
+      <button id="clear">Clear</button>
+      <button id="skip">Skip</button>
+    </div>
+    <p class="mut" style="margin:10px 0 0">Write inside the box with a stylus, finger or mouse. Sit letters on the solid
+      baseline; lowercase letters like <i>x</i> should reach the dashed line. Tails (g, y, p) go below the baseline.
+      Write naturally and vary each repeat a little.</p>
+  </section>
+
+  <section class="card">
+    <div class="row" style="margin:0 0 10px">
+      <label>Variants per glyph <input type="number" id="nvar" min="1" max="6" value="3"></label>
+      <button id="export" class="primary">Download glyphs.json</button>
+      <button id="import">Import…</button>
+      <button id="reset">Reset all</button>
+      <input type="file" id="file" accept=".json" hidden>
+    </div>
+    <div class="chips" id="chips"></div>
+    <p class="mut" id="status" style="margin:12px 0 0"></p>
+    <ol class="mut">
+      <li>Capture all glyphs (the chips turn green; click any chip to jump to it).</li>
+      <li>Download <code>glyphs.json</code> and put it in the project folder.</li>
+      <li>Run <code>write.py</code> to turn text into pen strokes.</li>
+    </ol>
+  </section>
+</main>
+
+<script>
+// Glyph coordinates: units of x-height, origin = baseline, +y up, cell = 4 x 4 units, baseline 2.6 below top.
+const CELL = 4, BASE = 2.6;
+const CHARS = [..."abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,!?'\"-:;()"];
+const KEY = "hw-glyphs-v1";
+let store = {};          // char -> array of variants; variant = array of strokes; stroke = [[x,y],...]
+let idx = 0;             // current char index
+let strokes = [];        // strokes of the glyph being drawn
+let drawing = null;
+
+const pad = document.getElementById("pad"), ctx = pad.getContext("2d");
+const nvarEl = document.getElementById("nvar");
+
+function load() { try { store = JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { store = {}; } }
+function save() { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) {} }
+const nvar = () => Math.max(1, Math.min(6, +nvarEl.value || 3));
+
+function toUnits(ev) {
+  const r = pad.getBoundingClientRect();
+  const x = (ev.clientX - r.left) / r.width * CELL;
+  const y = BASE - (ev.clientY - r.top) / r.height * CELL;
+  return [x, y];
+}
+const px = ([x, y]) => [x / CELL * pad.width, (BASE - y) / CELL * pad.height];
+
+function redraw() {
+  const W = pad.width, H = pad.height;
+  ctx.clearRect(0, 0, W, H);
+  const line = (y, dash, col) => { const [, py] = px([0, y]); ctx.setLineDash(dash); ctx.strokeStyle = col; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, py); ctx.lineTo(W, py); ctx.stroke(); };
+  line(0, [], "#9bb5f5"); line(1, [12, 10], "#c8d4f5"); line(1.5, [4, 12], "#e3e9fa");
+  ctx.setLineDash([]); ctx.strokeStyle = "#111"; ctx.lineWidth = 7; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const s of strokes) {
+    ctx.beginPath();
+    s.forEach((p, i) => { const [a, b] = px(p); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); });
+    if (s.length === 1) { const [a, b] = px(s[0]); ctx.lineTo(a + .1, b); }
+    ctx.stroke();
+  }
+}
+
+pad.addEventListener("pointerdown", ev => {
+  pad.setPointerCapture(ev.pointerId);
+  drawing = [toUnits(ev)]; strokes.push(drawing); redraw(); ev.preventDefault();
+});
+pad.addEventListener("pointermove", ev => {
+  if (!drawing) return;
+  const evs = ev.getCoalescedEvents ? ev.getCoalescedEvents() : [ev];
+  for (const e of (evs.length ? evs : [ev])) {
+    const p = toUnits(e), q = drawing[drawing.length - 1];
+    if (Math.hypot(p[0] - q[0], p[1] - q[1]) > 0.015) drawing.push(p);
+  }
+  redraw();
+});
+const end = () => { if (drawing) { drawing = null; redraw(); } };
+pad.addEventListener("pointerup", end);
+pad.addEventListener("pointercancel", end);
+
+// Ramer-Douglas-Peucker to keep files small
+function rdp(pts, eps) {
+  if (pts.length < 3) return pts;
+  const keep = new Array(pts.length).fill(false); keep[0] = keep[pts.length - 1] = true;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [s, e] = stack.pop(); const [ax, ay] = pts[s], [bx, by] = pts[e];
+    const dx = bx - ax, dy = by - ay, n = Math.hypot(dx, dy);
+    let best = -1, bi = -1;
+    for (let i = s + 1; i < e; i++) {
+      const d = n ? Math.abs(dy * (pts[i][0] - ax) - dx * (pts[i][1] - ay)) / n : Math.hypot(pts[i][0] - ax, pts[i][1] - ay);
+      if (d > best) { best = d; bi = i; }
+    }
+    if (best > eps) { keep[bi] = true; stack.push([s, bi], [bi, e]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+function normalise(ss) {
+  // Shift so the left-most ink is at x = 0; round for compact JSON.
+  const minx = Math.min(...ss.flat().map(p => p[0]));
+  return ss.map(s => rdp(s, 0.012).map(([x, y]) => [+(x - minx).toFixed(3), +y.toFixed(3)]));
+}
+
+function current() { return CHARS[idx]; }
+function nextTarget() { // first glyph still short of variants, starting after idx
+  for (let k = 1; k <= CHARS.length; k++) { const i = (idx + k) % CHARS.length;
+    if ((store[CHARS[i]] || []).length < nvar()) return i; }
+  return idx;
+}
+function accept() {
+  if (!strokes.length) return;
+  const c = current(); (store[c] = store[c] || []).push(normalise(strokes)); save();
+  strokes = [];
+  if (store[c].length >= nvar()) idx = nextTarget();
+  render();
+}
+function render() {
+  const c = current(), have = (store[c] || []).length;
+  document.getElementById("ch").textContent = c;
+  document.getElementById("info").textContent = `repeat ${Math.min(have + 1, nvar())} of ${nvar()}` + (have >= nvar() ? " (already complete: extra repeats are added)" : "");
+  const chips = document.getElementById("chips"); chips.textContent = "";
+  CHARS.forEach((ch, i) => {
+    const b = document.createElement("button"); b.className = "chip" + (i === idx ? " cur" : "") + ((store[ch] || []).length >= nvar() ? " done" : "");
+    b.textContent = ch; const n = (store[ch] || []).length; if (n) { const s = document.createElement("small"); s.textContent = n; b.appendChild(s); }
+    b.onclick = () => { idx = i; strokes = []; render(); }; chips.appendChild(b);
+  });
+  const done = CHARS.filter(ch => (store[ch] || []).length >= nvar()).length;
+  document.getElementById("status").textContent = `${done} of ${CHARS.length} glyphs complete.`;
+  redraw();
+}
+
+document.getElementById("accept").onclick = accept;
+document.getElementById("undo").onclick = () => { strokes.pop(); redraw(); };
+document.getElementById("clear").onclick = () => { strokes = []; redraw(); };
+document.getElementById("skip").onclick = () => { strokes = []; idx = (idx + 1) % CHARS.length; render(); };
+nvarEl.onchange = render;
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "Enter") { accept(); e.preventDefault(); }
+  if ((e.metaKey || e.ctrlKey) && e.key === "z") { strokes.pop(); redraw(); e.preventDefault(); }
+});
+document.getElementById("export").onclick = () => {
+  const out = { version: 1, unit: "x-height", glyphs: store };
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: "application/json" }));
+  a.download = "glyphs.json"; a.click();
+};
+document.getElementById("import").onclick = () => document.getElementById("file").click();
+document.getElementById("file").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try { const j = JSON.parse(await f.text()); store = j.glyphs || {}; save(); render(); } catch (err) { alert("Could not read that file."); }
+};
+document.getElementById("reset").onclick = () => { if (confirm("Delete all captured glyphs from this browser?")) { store = {}; save(); render(); } };
+
+load(); render();
+</script>
+</body>
+</html>
